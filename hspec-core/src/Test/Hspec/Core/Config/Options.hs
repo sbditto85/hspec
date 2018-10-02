@@ -33,6 +33,7 @@ envVarName = "HSPEC_OPTIONS"
 data Config = Config {
   configIgnoreConfigFile :: Bool
 , configDryRun :: Bool
+, configPrintSlowSpecs :: Maybe Int
 , configPrintCpuTime :: Bool
 , configFastFail :: Bool
 , configFailureReport :: Maybe FilePath
@@ -61,6 +62,7 @@ defaultConfig :: Config
 defaultConfig = Config {
   configIgnoreConfigFile = False
 , configDryRun = False
+, configPrintSlowSpecs = Nothing
 , configPrintCpuTime = False
 , configFastFail = False
 , configFailureReport = Nothing
@@ -124,6 +126,16 @@ mkOption :: Monad m => [Char] -> String -> Arg a -> String -> OptDescr (Result m
 mkOption shortcut name (Arg argName parser setter) help = Option shortcut [name] (ReqArg arg argName) help
   where
     arg input x = x >>= \c -> case parser input of
+      Just n -> Right (setter n `liftM` c)
+      Nothing -> Left (InvalidArgument name input)
+
+printSlowSpecsOption :: Monad m => OptDescr (Result m -> Result m)
+printSlowSpecsOption = Option "p" [name] (OptArg arg "N") "print the N slowest spec items"
+  where
+    name = "print-slow-specs"
+    setter v c = c {configPrintSlowSpecs = Just v}
+    arg = maybe (set (setter 10)) parseArg
+    parseArg input x = x >>= \ c -> case readMaybe input of
       Just n -> Right (setter n `liftM` c)
       Nothing -> Left (InvalidArgument name input)
 
@@ -192,6 +204,7 @@ quickCheckOptions = [
 runnerOptions :: Monad m => [OptDescr (Result m -> Result m)]
 runnerOptions = [
     Option [] ["dry-run"] (NoArg setDryRun) "pretend that everything passed; don't verify anything"
+  , printSlowSpecsOption
   , Option [] ["fail-fast"] (NoArg setFastFail) "abort on first failure"
   , Option "r" ["rerun"] (NoArg  setRerun) "rerun all examples that failed in the previous test run (only works in combination with --failure-report or in GHCi)"
   , mkOption [] "failure-report" (Arg "FILE" return setFailureReport) "read/write a failure report for use with --rerun"
