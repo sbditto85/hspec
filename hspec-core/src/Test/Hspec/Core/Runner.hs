@@ -37,6 +37,7 @@ import qualified Test.QuickCheck as QC
 import           Test.Hspec.Core.Util (Path)
 import           Test.Hspec.Core.Spec
 import           Test.Hspec.Core.Config
+import           Test.Hspec.Core.Format (printSlowSpecItems)
 import           Test.Hspec.Core.Formatters
 import           Test.Hspec.Core.Formatters.Internal
 import           Test.Hspec.Core.FailureReport
@@ -171,8 +172,12 @@ runSpec config spec = do
         , formatConfigPrintCpuTime = configPrintCpuTime config
         , formatConfigUsedSeed =  seed
         }
+
+      format <- maybe return printSlowSpecItems (configPrintSlowSpecs config) (formatterToFormat formatter formatConfig)
+
+      let
         evalConfig = EvalConfig {
-          evalConfigFormat = formatterToFormat formatter formatConfig
+          evalConfigFormat = format
         , evalConfigConcurrentJobs = concurrentJobs
         , evalConfigFastFail = configFastFail config
         }

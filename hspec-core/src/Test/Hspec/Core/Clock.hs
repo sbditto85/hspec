@@ -12,7 +12,7 @@ import           System.Clock
 import           Control.Concurrent
 
 newtype Seconds = Seconds Double
-  deriving (Eq, Show, Num, Fractional, PrintfArg)
+  deriving (Eq, Show, Ord, Num, Fractional, PrintfArg)
 
 toMicroseconds :: Seconds -> Int
 toMicroseconds (Seconds s) = floor (s * 1000000)
