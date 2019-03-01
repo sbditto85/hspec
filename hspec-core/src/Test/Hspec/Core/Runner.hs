@@ -5,7 +5,9 @@
 module Test.Hspec.Core.Runner (
 -- * Running a spec
   hspec
+, hspecDetails
 , runSpec
+, runSpecDetails
 
 -- * Config
 , Config (..)
@@ -14,6 +16,9 @@ module Test.Hspec.Core.Runner (
 , defaultConfig
 , configAddFilter
 , readConfig
+
+, Detail(..)
+, detailToString
 
 -- * Summary
 , Summary (..)
@@ -103,6 +108,13 @@ hspec spec =
   >>= readConfig defaultConfig
   >>= doNotLeakCommandLineArgumentsToExamples . runSpec spec
   >>= evaluateSummary
+
+hspecDetails :: Spec -> IO [Detail]
+hspecDetails spec =
+      getArgs
+  >>= readConfig defaultConfig
+  >>= doNotLeakCommandLineArgumentsToExamples . runSpecDetails spec
+  >>= (\(summary, details) -> pure details)
 
 -- Add a seed to given config if there is none.  That way the same seed is used
 -- for all properties.  This helps with --seed and --rerun.
@@ -241,6 +253,71 @@ runSpec_ config spec = do
 
     dumpFailureReport config seed qcArgs failures
     return (Summary total (length failures))
+
+runSpecDetails :: Spec -> Config -> IO (Summary, [Detail])
+runSpecDetails spec c_ = do
+  oldFailureReport <- readFailureReportOnRerun c_
+
+  c <- ensureSeed (applyFailureReport oldFailureReport c_)
+
+  if configRerunAllOnSuccess c
+    -- With --rerun-all we may run the spec twice. For that reason GHC can not
+    -- optimize away the spec tree. That means that the whole spec tree has to
+    -- be constructed in memory and we loose constant space behavior.
+    --
+    -- By separating between rerunAllMode and normalMode here, we retain
+    -- constant space behavior in normalMode.
+    --
+    -- see: https://github.com/hspec/hspec/issues/169
+    then rerunAllMode c oldFailureReport
+    else normalMode c
+  where
+    normalMode c = runSpecDetails_ c spec
+    rerunAllMode c oldFailureReport = do
+      runSpecDetails_ c spec
+      (summary, details) <- runSpecDetails_ c spec
+      if rerunAll c oldFailureReport summary
+        then runSpecDetails spec c_
+        else return (summary, details)
+
+
+runSpecDetails_ :: Config -> Spec -> IO (Summary, [Detail])
+runSpecDetails_ config spec = do
+  withHandle config $ \h -> do
+    let formatter = fromMaybe specdoc (configFormatter config)
+        seed = (fromJust . configQuickCheckSeed) config
+        qcArgs = configQuickCheckArgs config
+
+    concurrentJobs <- case configConcurrentJobs config of
+      Nothing -> getDefaultConcurrentJobs
+      Just n -> return n
+
+    useColor <- doesUseColor h config
+
+    let
+      focusedSpec = focusSpec config (failFocusedItems config spec)
+      params = Params (configQuickCheckArgs config) (configSmallCheckDepth config)
+
+    filteredSpec <- filterSpecs config . mapMaybe (toEvalTree params) . applyDryRun config <$> runSpecM focusedSpec
+    ((total, failures), details) <- withHiddenCursor useColor h $ do
+      let
+        formatConfig = FormatConfig {
+          formatConfigHandle = h
+        , formatConfigUseColor = useColor
+        , formatConfigUseDiff = configDiff config
+        , formatConfigHtmlOutput = configHtmlOutput config
+        , formatConfigPrintCpuTime = configPrintCpuTime config
+        , formatConfigUsedSeed =  seed
+        }
+        evalConfig = EvalConfig {
+          evalConfigFormat = formatterToFormat formatter formatConfig
+        , evalConfigConcurrentJobs = concurrentJobs
+        , evalConfigFastFail = configFastFail config
+        }
+      runCollector evalConfig filteredSpec
+
+    dumpFailureReport config seed qcArgs failures
+    return ((Summary total (length failures)), details)
 
 toEvalTree :: Params -> SpecTree () -> Maybe EvalTree
 toEvalTree params = go

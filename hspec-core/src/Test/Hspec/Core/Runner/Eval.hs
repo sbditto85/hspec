@@ -13,7 +13,10 @@ module Test.Hspec.Core.Runner.Eval (
   EvalConfig(..)
 , EvalTree
 , EvalItem(..)
+, Detail(..)
+, detailToString
 , runFormatter
+, runCollector
 #ifdef TEST
 , runSequentially
 #endif
@@ -33,6 +36,8 @@ import qualified Control.Monad.IO.Class as M
 import           Control.Monad.Trans.State hiding (State, state)
 import           Control.Monad.Trans.Class
 
+import           Data.List (intersperse)
+
 import           Test.Hspec.Core.Util
 import           Test.Hspec.Core.Spec (Tree(..), Progress, FailureReason(..), Result(..), ResultStatus(..), ProgressCallback)
 import           Test.Hspec.Core.Timer
@@ -51,11 +56,27 @@ data EvalConfig m = EvalConfig {
 , evalConfigFastFail :: Bool
 }
 
+data Detail = Detail {
+  detailPath :: Path
+, detailLocation :: Maybe Location
+, detailResult :: Format.Result
+, detailDuration :: Seconds
+}
+
+detailToString :: Detail -> String
+detailToString Detail{..} =
+  case detailResult of
+      Format.Success {} -> (concat $ intersperse "," $ fst detailPath) ++ " " ++ (snd detailPath) ++ ": Success"
+      Format.Pending {} -> (concat $ intersperse "," $ fst detailPath) ++ " " ++ (snd detailPath) ++ ": Pending"
+      Format.Failure {} -> (concat $ intersperse "," $ fst detailPath) ++ " " ++ (snd detailPath) ++ ": Failure"
+
+
 data State m = State {
   stateConfig :: EvalConfig m
 , stateSuccessCount :: Int
 , statePendingCount :: Int
 , stateFailures :: [Path]
+, stateDetails :: [Detail]
 }
 
 type EvalM m = StateT (State m) m
@@ -81,6 +102,12 @@ reportItem path item = do
   format <- getFormat formatItem
   lift (format path item)
 
+reportItemDetails :: Monad m => Path -> Format.Item -> EvalM m ()
+reportItemDetails path item = do
+  reportItem path item
+  let detail = Detail path (Format.itemLocation item) (Format.itemResult item) (Format.itemDuration item)
+  modify $ \state -> state {stateDetails = detail : stateDetails state }
+
 failureItem :: Maybe Location -> Seconds -> String -> FailureReason -> Format.Item
 failureItem loc duration info err = Format.Item loc duration info (Format.Failure err)
 
@@ -92,6 +119,16 @@ reportResult path loc (duration, result) = do
       Pending loc_ reason -> reportItem path (Format.Item (loc_ <|> loc) duration info $ Format.Pending reason)
       Failure loc_ err@(Error _ e) -> reportItem path (failureItem (loc_ <|> extractLocation e <|> loc) duration info err)
       Failure loc_ err -> reportItem path (failureItem (loc_ <|> loc) duration info err)
+
+reportResultDetails :: Monad m => Path -> Maybe Location -> (Seconds, Result) -> EvalM m ()
+reportResultDetails path loc (duration, result) = do
+  case result of
+    Result info status -> case status of
+      Success -> reportItemDetails path (Format.Item loc duration info Format.Success)
+      Pending loc_ reason -> reportItemDetails path (Format.Item (loc_ <|> loc) duration info $ Format.Pending reason)
+      Failure loc_ err@(Error _ e) -> reportItemDetails path (failureItem (loc_ <|> extractLocation e <|> loc) duration info err)
+      Failure loc_ err -> reportItemDetails path (failureItem (loc_ <|> loc) duration info err)
+
 
 groupStarted :: Monad m => Path -> EvalM m ()
 groupStarted path = do
@@ -113,7 +150,7 @@ data EvalItem = EvalItem {
 type EvalTree = Tree (IO ()) EvalItem
 
 runEvalM :: Monad m => EvalConfig m -> EvalM m () -> m (State m)
-runEvalM config action = execStateT action (State config 0 0 [])
+runEvalM config action = execStateT action (State config 0 0 [] [])
 
 -- | Evaluate all examples of a given spec and produce a report.
 runFormatter :: forall m. MonadIO m => EvalConfig m -> [EvalTree] -> IO (Int, [Path])
@@ -130,6 +167,29 @@ runFormatter config specs = do
         failures = stateFailures state
         total = stateSuccessCount state + statePendingCount state + length failures
       return (total, reverse failures)
+  where
+    format = evalConfigFormat config
+
+    reportProgress :: IO Bool -> Path -> Progress -> m ()
+    reportProgress timer path progress = do
+      r <- liftIO timer
+      when r (formatProgress format path progress)
+
+-- | Evaluate all examples of a given spec and produce a report.
+runCollector :: forall m. MonadIO m => EvalConfig m -> [EvalTree] -> IO ((Int, [Path]),[Detail])
+runCollector config specs = do
+  let
+    start = parallelizeTree (evalConfigConcurrentJobs config) specs
+    cancel = cancelMany . concatMap toList . map (fmap fst)
+  E.bracket start cancel $ \ runningSpecs -> do
+    withTimer 0.05 $ \ timer -> do
+      state <- formatRun format $ do
+        runEvalM config $
+          runDetails $ map (fmap (fmap (. reportProgress timer) . snd)) runningSpecs
+      let
+        failures = stateFailures state
+        total = stateSuccessCount state + statePendingCount state + length failures
+      return ((total, reverse failures), stateDetails state)
   where
     format = evalConfigFormat config
 
@@ -231,6 +291,34 @@ run specs = do
     evalItem :: [String] -> RunningItem m -> EvalM m ()
     evalItem groups (Item requirement loc action) = do
       lift (action path) >>= reportResult path loc
+      where
+        path :: Path
+        path = (groups, requirement)
+
+
+runDetails :: forall m. MonadIO m => [RunningTree m] -> EvalM m ()
+runDetails specs = do
+  fastFail <- gets (evalConfigFastFail . stateConfig)
+  sequenceActions fastFail (concatMap foldSpec specs)
+  where
+    foldSpec :: RunningTree m -> [EvalM m ()]
+    foldSpec = foldTree FoldTree {
+      onGroupStarted = groupStarted
+    , onGroupDone = groupDone
+    , onCleanup = runCleanup
+    , onLeafe = evalItem
+    }
+
+    runCleanup :: [String] -> IO () -> EvalM m ()
+    runCleanup groups action = do
+      (dt, r) <- liftIO $ measure $ safeTry action
+      either (\ e -> reportItem path . failureItem (extractLocation e) dt "" . Error Nothing $ e) return r
+      where
+        path = (groups, "afterAll-hook")
+
+    evalItem :: [String] -> RunningItem m -> EvalM m ()
+    evalItem groups (Item requirement loc action) = do
+      lift (action path) >>= reportResultDetails path loc
       where
         path :: Path
         path = (groups, requirement)

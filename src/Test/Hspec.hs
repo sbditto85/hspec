@@ -66,6 +66,7 @@ module Test.Hspec (
 
 -- * Running a spec
 , hspec
+, runSpecDetails
 ) where
 
 import           Test.Hspec.Core.Spec
