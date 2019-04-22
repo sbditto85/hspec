@@ -18,6 +18,8 @@ module Test.Hspec.Core.Runner (
 , readConfig
 
 , Detail(..)
+, Format.Result(..)
+, FailureReason(..)
 , detailToString
 
 -- * Summary
@@ -51,6 +53,8 @@ import qualified Test.QuickCheck as QC
 import           Test.Hspec.Core.Util (Path)
 import           Test.Hspec.Core.Spec
 import           Test.Hspec.Core.Config
+import           Test.Hspec.Core.Example (FailureReason(..))
+import qualified Test.Hspec.Core.Format as Format
 import           Test.Hspec.Core.Formatters
 import           Test.Hspec.Core.Formatters.Internal
 import           Test.Hspec.Core.FailureReport
