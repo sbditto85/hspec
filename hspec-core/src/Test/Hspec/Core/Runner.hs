@@ -17,7 +17,9 @@ module Test.Hspec.Core.Runner (
 , configAddFilter
 , readConfig
 
+-- * Details of spec
 , Detail(..)
+, Seconds(..)
 , Format.Result(..)
 , FailureReason(..)
 , detailToString

@@ -20,6 +20,8 @@ module Test.Hspec.Core.Runner.Eval (
 #ifdef TEST
 , runSequentially
 #endif
+-- * Details of spec
+, Seconds(..)
 ) where
 
 import           Prelude ()
